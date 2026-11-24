@@ -1,0 +1,28 @@
+services:
+  # Backend Spring Boot Service
+  - type: web
+    name: airaware-backend
+    env: java
+    rootDir: backend
+    buildCommand: mvn clean package -DskipTests
+    startCommand: java -jar target/airaware-backend-1.0.0.jar
+    plan: free
+    envVars:
+      - key: AIRAWARE_DEMO_MODE
+        value: "false"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-1.5-flash
+
+  # Frontend React Static Site
+  - type: web
+    name: airaware-frontend
+    env: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
