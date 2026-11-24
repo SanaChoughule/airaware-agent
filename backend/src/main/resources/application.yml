@@ -1,0 +1,15 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: airaware-backend
+
+airaware:
+  gemini:
+    api-key: ${GEMINI_API_KEY:}
+    model: ${GEMINI_MODEL:gemini-1.5-flash}
+  google:
+    air-quality-api-key: ${GOOGLE_AIR_QUALITY_API_KEY:}
+    maps-api-key: ${GOOGLE_MAPS_API_KEY:}
+  demo-mode: ${AIRAWARE_DEMO_MODE:true}

@@ -1,0 +1,14 @@
+# Logs and build artifacts
+target/
+dist/
+node_modules/
+*.log
+.DS_Store
+
+# IDE configs
+.idea/
+*.iml
+.vscode/
+
+# Environment files
+.env
