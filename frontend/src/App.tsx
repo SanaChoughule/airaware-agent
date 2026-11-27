@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { Sidebar, MobileNav } from './components/Sidebar';
 import { PreferencesModal } from './components/PreferencesModal';
@@ -29,6 +29,9 @@ export function App() {
     lng: 72.8777,
   });
   const [locationName, setLocationName] = useState<string>('Mumbai, Maharashtra, India');
+
+  // Track if user explicitly selected a custom named location (so reverse-geocode doesn't overwrite it with a random sub-district/village)
+  const isCustomNamedRef = useRef<boolean>(false);
 
   // Household Profile
   const [preferences, setPreferences] = useState<HouseholdPreferences>({
@@ -63,105 +66,107 @@ export function App() {
   const [loadingIndoor, setLoadingIndoor] = useState(true);
   const [loadingImpact, setLoadingImpact] = useState(true);
 
-  // Fetch AQI Data
-  const loadAQI = async (lat: number, lng: number) => {
+  // Unified updater for any selected or detected location
+  const updateActiveLocation = async (lat: number, lng: number, explicitName?: string) => {
+    setCoords({ lat, lng });
     setLoadingAQI(true);
+    setLoadingPlan(true);
+    setLoadingIndoor(true);
+
+    if (explicitName && explicitName.trim()) {
+      isCustomNamedRef.current = true;
+      setLocationName(explicitName);
+    } else {
+      isCustomNamedRef.current = false;
+    }
+
     try {
-      const data = await apiService.getCurrentAirQuality(lat, lng);
-      setAirQuality(data);
-      if (data.locationName && !data.locationName.startsWith('Coordinates')) {
-        setLocationName(data.locationName);
+      // 1. Fetch live AQI for these exact coordinates
+      const aqiData = await apiService.getCurrentAirQuality(lat, lng);
+      
+      // Keep the user-chosen clean location name if one was provided
+      if (explicitName && explicitName.trim()) {
+        aqiData.locationName = explicitName;
+      } else if (!isCustomNamedRef.current && aqiData.locationName && !aqiData.locationName.startsWith('Coordinates')) {
+        setLocationName(aqiData.locationName);
       }
-      return data;
+      
+      setAirQuality(aqiData);
+      setLoadingAQI(false);
+
+      const resolvedName = explicitName || aqiData.locationName || locationName;
+
+      // 2. Fetch AI Daily Plan and Indoor Advice in parallel
+      const [plan, indoor] = await Promise.all([
+        apiService.getDailyPlan(
+          lat,
+          lng,
+          resolvedName,
+          aqiData.aqi,
+          aqiData.dominantPollutant,
+          preferences
+        ),
+        apiService.getIndoorRecommendations(
+          aqiData.aqi,
+          aqiData.dominantPollutant,
+          preferences
+        ),
+      ]);
+
+      setDailyPlan(plan);
+      setIndoorAdvice(indoor);
     } catch (e) {
-      console.error(e);
-      return null;
+      console.error('Error updating active location:', e);
     } finally {
       setLoadingAQI(false);
-    }
-  };
-
-  // Fetch AI Daily Plan
-  const loadPlan = async (currentAqi: number, dominant: string) => {
-    setLoadingPlan(true);
-    try {
-      const plan = await apiService.getDailyPlan(
-        coords.lat,
-        coords.lng,
-        locationName,
-        currentAqi,
-        dominant,
-        preferences
-      );
-      setDailyPlan(plan);
-    } catch (e) {
-      console.error(e);
-    } finally {
       setLoadingPlan(false);
-    }
-  };
-
-  // Fetch Indoor Recommendations
-  const loadIndoor = async (currentAqi: number, dominant: string) => {
-    setLoadingIndoor(true);
-    try {
-      const data = await apiService.getIndoorRecommendations(currentAqi, dominant, preferences);
-      setIndoorAdvice(data);
-    } catch (e) {
-      console.error(e);
-    } finally {
       setLoadingIndoor(false);
     }
   };
 
-  // Fetch Impact
-  const loadImpact = async () => {
-    setLoadingImpact(true);
-    try {
-      const data = await apiService.getImpactAnalysis(completedActions);
-      setImpactAnalysis(data);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoadingImpact(false);
-    }
-  };
-
-  // Initial & Coordinate-based Effect
+  // Initial load on startup
   useEffect(() => {
-    let active = true;
-    const fetchAll = async () => {
-      const data = await loadAQI(coords.lat, coords.lng);
-      if (data && active) {
-        loadPlan(data.aqi, data.dominantPollutant);
-        loadIndoor(data.aqi, data.dominantPollutant);
-        loadImpact();
-      }
-    };
-    fetchAll();
-    return () => {
-      active = false;
-    };
-  }, [coords.lat, coords.lng]);
+    updateActiveLocation(coords.lat, coords.lng, locationName);
+    apiService.getImpactAnalysis(completedActions).then(setImpactAnalysis).catch(console.error);
+  }, []);
 
   // Re-run plan when household preferences change
   useEffect(() => {
     if (airQuality) {
-      loadPlan(airQuality.aqi, airQuality.dominantPollutant);
-      loadIndoor(airQuality.aqi, airQuality.dominantPollutant);
+      apiService
+        .getDailyPlan(
+          coords.lat,
+          coords.lng,
+          locationName,
+          airQuality.aqi,
+          airQuality.dominantPollutant,
+          preferences
+        )
+        .then(setDailyPlan)
+        .catch(console.error);
+
+      apiService
+        .getIndoorRecommendations(
+          airQuality.aqi,
+          airQuality.dominantPollutant,
+          preferences
+        )
+        .then(setIndoorAdvice)
+        .catch(console.error);
     }
   }, [preferences]);
 
-  // Robust Two-tier Live Location Handler (Browser Geolocation -> High-Accuracy IP Fallback)
+  // Robust Live Location Detection (Browser GPS -> IP Geolocation Fallback)
   const handleUseMyLocation = () => {
     setIsLocating(true);
+    isCustomNamedRef.current = false;
 
     const fallbackToIp = async () => {
       try {
         const ipData = await apiService.detectIpLocation();
         if (ipData && ipData.latitude && ipData.longitude) {
-          setCoords({ lat: ipData.latitude, lng: ipData.longitude });
-          setLocationName(ipData.formattedAddress);
+          const name = ipData.formattedAddress || `${ipData.locality || 'Detected Area'}`;
+          await updateActiveLocation(ipData.latitude, ipData.longitude, name);
         }
       } catch (err) {
         console.error('IP location fallback error:', err);
@@ -175,18 +180,19 @@ export function App() {
         async (position) => {
           const lat = position.coords.latitude;
           const lng = position.coords.longitude;
-          setCoords({ lat, lng });
           try {
             const rev = await apiService.reverseGeocode(lat, lng);
-            if (rev.formattedAddress) setLocationName(rev.formattedAddress);
+            const name = rev.formattedAddress || `Live Location (${lat.toFixed(2)}, ${lng.toFixed(2)})`;
+            await updateActiveLocation(lat, lng, name);
           } catch (e) {
-            console.error(e);
+            console.error('Reverse geocode error:', e);
+            await updateActiveLocation(lat, lng, `My Coordinates (${lat.toFixed(2)}, ${lng.toFixed(2)})`);
           } finally {
             setIsLocating(false);
           }
         },
         async (error) => {
-          console.warn('Browser geolocation denied/timed out; using IP network geolocation fallback:', error.message);
+          console.warn('Browser GPS unavailable/denied, falling back to IP Geolocation:', error.message);
           await fallbackToIp();
         },
         { enableHighAccuracy: true, timeout: 6000, maximumAge: 60000 }
@@ -197,8 +203,7 @@ export function App() {
   };
 
   const handleSelectCoords = (lat: number, lng: number, name: string) => {
-    setCoords({ lat, lng });
-    setLocationName(name);
+    updateActiveLocation(lat, lng, name);
   };
 
   const handleAddSavedLocation = (name: string, tag: SavedLocation['tag']) => {
@@ -223,7 +228,7 @@ export function App() {
       const next = prev.includes(actionId)
         ? prev.filter((id) => id !== actionId)
         : [...prev, actionId];
-      apiService.getImpactAnalysis(next).then((res) => setImpactAnalysis(res));
+      apiService.getImpactAnalysis(next).then(setImpactAnalysis).catch(console.error);
       return next;
     });
   };
@@ -236,7 +241,7 @@ export function App() {
         lastUpdated={airQuality?.lastUpdated || 'Updating...'}
         isSimulated={airQuality?.isSimulated || false}
         onUseMyLocation={handleUseMyLocation}
-        onSelectSavedLocation={(loc) => handleSelectCoords(loc.latitude, loc.longitude, loc.name)}
+        onSelectSavedLocation={(loc) => updateActiveLocation(loc.latitude, loc.longitude, loc.name)}
         savedLocations={savedLocations}
         onAddSavedLocation={handleAddSavedLocation}
         onRemoveSavedLocation={handleRemoveSavedLocation}
@@ -264,7 +269,16 @@ export function App() {
               plan={dailyPlan}
               loading={loadingPlan}
               onRefreshPlan={() => {
-                if (airQuality) loadPlan(airQuality.aqi, airQuality.dominantPollutant);
+                if (airQuality) {
+                  apiService.getDailyPlan(
+                    coords.lat,
+                    coords.lng,
+                    locationName,
+                    airQuality.aqi,
+                    airQuality.dominantPollutant,
+                    preferences
+                  ).then(setDailyPlan);
+                }
               }}
               onToggleAction={handleToggleAction}
               completedActions={completedActions}
