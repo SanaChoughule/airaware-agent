@@ -7,6 +7,9 @@ public class AirQualityData {
     private double latitude;
     private double longitude;
     private String locationName;
+    private String city;
+    private String state;
+    private String country;
     private int aqi;
     private String category; // Good, Moderate, Poor, Very Poor, Severe
     private String healthRisk; // Low, Moderate, High, Critical
@@ -14,6 +17,9 @@ public class AirQualityData {
     private String summary;
     private String lastUpdated;
     private boolean isSimulated;
+    private String precision; // "exact_landmark", "locality", "city_level"
+    private String nearestStation;
+    private Double stationDistanceKm;
     private Map<String, PollutantDetail> pollutants;
     private List<HourlyForecast> hourlyForecast;
     private String bestOutdoorWindow;
@@ -28,6 +34,15 @@ public class AirQualityData {
 
     public String getLocationName() { return locationName; }
     public void setLocationName(String locationName) { this.locationName = locationName; }
+
+    public String getCity() { return city; }
+    public void setCity(String city) { this.city = city; }
+
+    public String getState() { return state; }
+    public void setState(String state) { this.state = state; }
+
+    public String getCountry() { return country; }
+    public void setCountry(String country) { this.country = country; }
 
     public int getAqi() { return aqi; }
     public void setAqi(int aqi) { this.aqi = aqi; }
@@ -49,6 +64,15 @@ public class AirQualityData {
 
     public boolean isSimulated() { return isSimulated; }
     public void setSimulated(boolean simulated) { isSimulated = simulated; }
+
+    public String getPrecision() { return precision; }
+    public void setPrecision(String precision) { this.precision = precision; }
+
+    public String getNearestStation() { return nearestStation; }
+    public void setNearestStation(String nearestStation) { this.nearestStation = nearestStation; }
+
+    public Double getStationDistanceKm() { return stationDistanceKm; }
+    public void setStationDistanceKm(Double stationDistanceKm) { this.stationDistanceKm = stationDistanceKm; }
 
     public Map<String, PollutantDetail> getPollutants() { return pollutants; }
     public void setPollutants(Map<String, PollutantDetail> pollutants) { this.pollutants = pollutants; }

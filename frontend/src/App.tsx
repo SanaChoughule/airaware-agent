@@ -18,6 +18,15 @@ import {
 } from './types';
 import { apiService } from './services/api';
 
+const DEFAULT_PREFERENCES: HouseholdPreferences = {
+  profiles: ['respiratory-sensitive', 'children'],
+  commuteType: 'public_transit',
+  exerciseHabit: 'morning_outdoor',
+  budgetPreference: 'low-cost',
+  hasAirPurifier: true,
+  cookingType: 'lpg_well_ventilated',
+};
+
 export function App() {
   const [activeTab, setActiveTab] = useState<string>('overview');
   const [isPrefOpen, setIsPrefOpen] = useState(false);
@@ -33,23 +42,32 @@ export function App() {
   // Track if user explicitly selected a custom named location (so reverse-geocode doesn't overwrite it with a random sub-district/village)
   const isCustomNamedRef = useRef<boolean>(false);
 
-  // Household Profile
-  const [preferences, setPreferences] = useState<HouseholdPreferences>({
-    profiles: ['respiratory-sensitive', 'children'],
-    commuteType: 'public_transit',
-    exerciseHabit: 'morning_outdoor',
-    budgetPreference: 'low-cost',
-    hasAirPurifier: true,
-    cookingType: 'lpg_well_ventilated',
+  // Household Profile with localStorage hydration
+  const [preferences, setPreferences] = useState<HouseholdPreferences>(() => {
+    try {
+      const saved = localStorage.getItem('airaware_preferences');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to parse saved preferences:', e);
+    }
+    return DEFAULT_PREFERENCES;
   });
 
-  // Saved Locations
-  const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([
-    { id: '1', name: 'Mumbai, Maharashtra', tag: 'Home', latitude: 19.0760, longitude: 72.8777, aqi: 162 },
-    { id: '2', name: 'Satara, Maharashtra', tag: 'Family', latitude: 17.6883, longitude: 74.0041, aqi: 114 },
-    { id: '3', name: 'Pune, Maharashtra', tag: 'Office', latitude: 18.5204, longitude: 73.8567, aqi: 114 },
-    { id: '4', name: 'Delhi, India', tag: 'Other', latitude: 28.6139, longitude: 77.2090, aqi: 318 },
-  ]);
+  // Saved Locations with localStorage hydration
+  const [savedLocations, setSavedLocations] = useState<SavedLocation[]>(() => {
+    try {
+      const saved = localStorage.getItem('airaware_saved_locations');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to parse saved locations:', e);
+    }
+    return [
+      { id: '1', name: 'Mumbai, Maharashtra', tag: 'Home', latitude: 19.0760, longitude: 72.8777, aqi: 162 },
+      { id: '2', name: 'Satara, Maharashtra', tag: 'Family', latitude: 17.6883, longitude: 74.0041, aqi: 114 },
+      { id: '3', name: 'Pune, Maharashtra', tag: 'Office', latitude: 18.5204, longitude: 73.8567, aqi: 114 },
+      { id: '4', name: 'Delhi, India', tag: 'Other', latitude: 28.6139, longitude: 77.2090, aqi: 318 },
+    ];
+  });
 
   // Data States
   const [airQuality, setAirQuality] = useState<AirQualityData | null>(null);
@@ -58,13 +76,39 @@ export function App() {
   const [impactAnalysis, setImpactAnalysis] = useState<ImpactResponse | null>(null);
 
   // Completed Action Trackers
-  const [completedActions, setCompletedActions] = useState<string[]>(['m1', 'c1']);
+  const [completedActions, setCompletedActions] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('airaware_completed_actions');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to parse completed actions:', e);
+    }
+    return ['m1', 'c1'];
+  });
 
   // Loading States
   const [loadingAQI, setLoadingAQI] = useState(true);
   const [loadingPlan, setLoadingPlan] = useState(true);
   const [loadingIndoor, setLoadingIndoor] = useState(true);
   const [loadingImpact, setLoadingImpact] = useState(true);
+
+  // Persist saved locations to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('airaware_saved_locations', JSON.stringify(savedLocations));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [savedLocations]);
+
+  // Persist completed actions
+  useEffect(() => {
+    try {
+      localStorage.setItem('airaware_completed_actions', JSON.stringify(completedActions));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [completedActions]);
 
   // Unified updater for any selected or detected location
   const updateActiveLocation = async (lat: number, lng: number, explicitName?: string) => {
@@ -124,35 +168,49 @@ export function App() {
     }
   };
 
+  // Explicit Dashboard Refresh handler (re-fetches AQI, daily plan, indoor advice without modifying location)
+  const refreshCurrentLocation = async () => {
+    await updateActiveLocation(coords.lat, coords.lng, locationName);
+  };
+
   // Initial load on startup
   useEffect(() => {
     updateActiveLocation(coords.lat, coords.lng, locationName);
-    apiService.getImpactAnalysis(completedActions).then(setImpactAnalysis).catch(console.error);
+    apiService.getImpactAnalysis(completedActions).then((data) => {
+      setImpactAnalysis(data);
+      setLoadingImpact(false);
+    }).catch((e) => {
+      console.error(e);
+      setLoadingImpact(false);
+    });
   }, []);
 
-  // Re-run plan when household preferences change
+  // Re-run plan and indoor advice when household preferences change
   useEffect(() => {
     if (airQuality) {
-      apiService
-        .getDailyPlan(
+      setLoadingPlan(true);
+      setLoadingIndoor(true);
+      Promise.all([
+        apiService.getDailyPlan(
           coords.lat,
           coords.lng,
           locationName,
           airQuality.aqi,
           airQuality.dominantPollutant,
           preferences
-        )
-        .then(setDailyPlan)
-        .catch(console.error);
-
-      apiService
-        .getIndoorRecommendations(
+        ),
+        apiService.getIndoorRecommendations(
           airQuality.aqi,
           airQuality.dominantPollutant,
           preferences
-        )
-        .then(setIndoorAdvice)
-        .catch(console.error);
+        ),
+      ]).then(([plan, indoor]) => {
+        setDailyPlan(plan);
+        setIndoorAdvice(indoor);
+      }).catch(console.error).finally(() => {
+        setLoadingPlan(false);
+        setLoadingIndoor(false);
+      });
     }
   }, [preferences]);
 
@@ -261,6 +319,7 @@ export function App() {
               loading={loadingAQI}
               onNavigateToPlanner={() => setActiveTab('planner')}
               onNavigateToAssistant={() => setActiveTab('assistant')}
+              onRefresh={refreshCurrentLocation}
             />
           )}
 
@@ -268,16 +327,18 @@ export function App() {
             <PlannerView
               plan={dailyPlan}
               loading={loadingPlan}
-              onRefreshPlan={() => {
+              locationName={locationName}
+              onRefreshPlan={async () => {
                 if (airQuality) {
-                  apiService.getDailyPlan(
+                  const updated = await apiService.getDailyPlan(
                     coords.lat,
                     coords.lng,
                     locationName,
                     airQuality.aqi,
                     airQuality.dominantPollutant,
                     preferences
-                  ).then(setDailyPlan);
+                  );
+                  setDailyPlan(updated);
                 }
               }}
               onToggleAction={handleToggleAction}
@@ -308,6 +369,8 @@ export function App() {
               currentLocationName={locationName}
               currentAqi={airQuality?.aqi || 145}
               dominantPollutant={airQuality?.dominantPollutant || 'PM2.5'}
+              latitude={coords.lat}
+              longitude={coords.lng}
               preferences={preferences}
               onNavigateTab={(tab) => setActiveTab(tab)}
               onSelectLocation={(locName) => {
@@ -325,6 +388,14 @@ export function App() {
               impact={impactAnalysis}
               loading={loadingImpact}
               completedActionCount={completedActions.length}
+              locationName={locationName}
+              onRefreshImpact={() => {
+                setLoadingImpact(true);
+                apiService.getImpactAnalysis(completedActions)
+                  .then(setImpactAnalysis)
+                  .catch(console.error)
+                  .finally(() => setLoadingImpact(false));
+              }}
             />
           )}
         </main>

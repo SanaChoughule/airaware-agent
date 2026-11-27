@@ -29,17 +29,22 @@ public class AirQualityService {
         this.objectMapper = objectMapper;
         this.webClient = WebClient.builder()
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(2 * 1024 * 1024))
-                .defaultHeader("User-Agent", "AirAware-Intelligence/2.0 (Environmental-Companion)")
+                .defaultHeader("User-Agent", "AirAware-Environmental-Assistant/2.5")
                 .build();
     }
 
     public AirQualityData getCurrentAirQuality(double lat, double lng) {
         AirQualityData data = liveProvider.getCurrentAirQuality(lat, lng);
+        
+        // Enrich with granular administrative reverse geocode if locationName is missing or generic
         if (data.getLocationName() == null || data.getLocationName().startsWith("Coordinates")) {
             Map<String, Object> geo = reverseGeocode(lat, lng);
             if (geo.containsKey("formattedAddress")) {
                 data.setLocationName((String) geo.get("formattedAddress"));
             }
+            if (geo.containsKey("city")) data.setCity((String) geo.get("city"));
+            if (geo.containsKey("state")) data.setState((String) geo.get("state"));
+            if (geo.containsKey("country")) data.setCountry((String) geo.get("country"));
         }
         return data;
     }
@@ -48,9 +53,14 @@ public class AirQualityService {
         return getCurrentAirQuality(lat, lng);
     }
 
+    /**
+     * Search locations using OpenStreetMap Nominatim.
+     * Validates input: Returns EMPTY list for unidentifiable or gibberish input.
+     * NEVER synthesizes fake coordinates.
+     */
     public List<Map<String, Object>> searchLocations(String query) {
         List<Map<String, Object>> results = new ArrayList<>();
-        if (query == null || query.trim().isEmpty()) {
+        if (query == null || query.trim().length() < 2) {
             return results;
         }
 
@@ -58,7 +68,7 @@ public class AirQualityService {
 
         // 1. Try real OpenStreetMap Nominatim global geocoding API
         try {
-            String url = "https://nominatim.openstreetmap.org/search?format=json&limit=6&addressdetails=1&q="
+            String url = "https://nominatim.openstreetmap.org/search?format=json&limit=8&addressdetails=1&q="
                     + URLEncoder.encode(trimmed, StandardCharsets.UTF_8);
 
             String response = webClient.get()
@@ -76,12 +86,21 @@ public class AirQualityService {
                         double lat = Double.parseDouble(item.path("lat").asText());
                         double lon = Double.parseDouble(item.path("lon").asText());
 
-                        // Short clean label
-                        String cleanName = buildCleanName(item, displayName);
-                        entry.put("name", cleanName);
+                        JsonNode addr = item.path("address");
+                        String landmarkOrPlace = extractPrimaryPlaceName(item, addr);
+                        String city = extractCity(addr);
+                        String state = addr.has("state") ? addr.path("state").asText() : "";
+                        String country = addr.has("country") ? addr.path("country").asText() : "";
+
+                        // Structured naming
+                        entry.put("name", landmarkOrPlace);
                         entry.put("displayName", displayName);
+                        entry.put("city", city);
+                        entry.put("state", state);
+                        entry.put("country", country);
                         entry.put("latitude", lat);
                         entry.put("longitude", lon);
+                        entry.put("precision", determinePrecision(item));
                         results.add(entry);
                     }
                     if (!results.isEmpty()) {
@@ -93,7 +112,7 @@ public class AirQualityService {
             log.warn("Nominatim global search failed for '{}': {}", trimmed, ex.getMessage());
         }
 
-        // 2. Preset match fallback
+        // 2. Preset match fallback only for recognized preset names
         String qLower = trimmed.toLowerCase();
         for (Map.Entry<String, SimulatedAirQualityProvider.CityProfile> entry : SimulatedAirQualityProvider.PRESET_LOCATIONS.entrySet()) {
             SimulatedAirQualityProvider.CityProfile cp = entry.getValue();
@@ -101,23 +120,18 @@ public class AirQualityService {
                 Map<String, Object> item = new LinkedHashMap<>();
                 item.put("name", cp.name);
                 item.put("displayName", cp.name);
+                item.put("city", entry.getKey());
+                item.put("state", "");
+                item.put("country", "");
                 item.put("latitude", cp.lat);
                 item.put("longitude", cp.lng);
                 item.put("baseAqi", cp.baseAqi);
+                item.put("precision", "city_level");
                 results.add(item);
             }
         }
 
-        // 3. Synthetic fallback for any arbitrary query if offline
-        if (results.isEmpty()) {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("name", trimmed);
-            item.put("displayName", trimmed + ", Urban District");
-            item.put("latitude", 17.68 + (Math.abs(trimmed.hashCode() % 500) * 0.01));
-            item.put("longitude", 74.00 + (Math.abs(trimmed.hashCode() % 500) * 0.01));
-            results.add(item);
-        }
-
+        // Rule: If no legitimate result is found, return empty array. NEVER generate synthetic fake coordinates.
         return results;
     }
 
@@ -128,7 +142,7 @@ public class AirQualityService {
 
         try {
             String url = String.format(Locale.US,
-                    "https://nominatim.openstreetmap.org/reverse?format=json&lat=%.4f&lon=%.4f",
+                    "https://nominatim.openstreetmap.org/reverse?format=json&lat=%.5f&lon=%.5f&addressdetails=1",
                     lat, lng);
 
             String response = webClient.get()
@@ -141,11 +155,17 @@ public class AirQualityService {
                 JsonNode root = objectMapper.readTree(response);
                 String displayName = root.path("display_name").asText();
                 JsonNode addr = root.path("address");
-                String locality = extractLocality(addr);
+                String place = extractPrimaryPlaceName(root, addr);
+                String city = extractCity(addr);
+                String state = addr.has("state") ? addr.path("state").asText() : "";
+                String country = addr.has("country") ? addr.path("country").asText() : "";
 
-                result.put("formattedAddress", !locality.isEmpty() ? locality : displayName);
+                result.put("formattedAddress", place);
                 result.put("fullAddress", displayName);
-                result.put("locality", locality);
+                result.put("locality", place);
+                result.put("city", city);
+                result.put("state", state);
+                result.put("country", country);
                 return result;
             }
         } catch (Exception ex) {
@@ -157,11 +177,12 @@ public class AirQualityService {
             if (Math.abs(cp.lat - lat) < 0.35 && Math.abs(cp.lng - lng) < 0.35) {
                 result.put("formattedAddress", cp.name);
                 result.put("locality", cp.name.split(",")[0]);
+                result.put("city", cp.name.split(",")[0]);
                 return result;
             }
         }
 
-        result.put("formattedAddress", String.format("Location (%.3f° N, %.3f° E)", lat, lng));
+        result.put("formattedAddress", String.format("Coordinates (%.4f° N, %.4f° E)", lat, lng));
         result.put("locality", "Local Area");
         return result;
     }
@@ -189,6 +210,10 @@ public class AirQualityService {
                     result.put("longitude", lon);
                     result.put("formattedAddress", full);
                     result.put("locality", city);
+                    result.put("city", city);
+                    result.put("state", region);
+                    result.put("country", country);
+                    result.put("precision", "city_level");
                     result.put("source", "IP Geolocation");
                     return result;
                 }
@@ -197,56 +222,84 @@ public class AirQualityService {
             log.warn("IP Geolocation detection failed: {}", ex.getMessage());
         }
 
-        // Default to Mumbai if external lookup fails
+        // Standard default fallback
         result.put("latitude", 19.0760);
         result.put("longitude", 72.8777);
         result.put("formattedAddress", "Mumbai, Maharashtra, India");
         result.put("locality", "Mumbai");
+        result.put("city", "Mumbai");
+        result.put("state", "Maharashtra");
+        result.put("country", "India");
+        result.put("precision", "city_level");
         result.put("source", "Default");
         return result;
     }
 
-    private String buildCleanName(JsonNode item, String displayName) {
-        JsonNode addr = item.path("address");
-        if (!addr.isMissingNode()) {
-            String city = addr.has("city") ? addr.path("city").asText()
-                    : addr.has("town") ? addr.path("town").asText()
-                    : addr.has("village") ? addr.path("village").asText()
-                    : addr.has("county") ? addr.path("county").asText() : "";
+    private String extractPrimaryPlaceName(JsonNode item, JsonNode addr) {
+        if (addr != null && !addr.isMissingNode()) {
+            // Check for specific landmark / amenity / waterbody names
+            String landmark = addr.has("leisure") ? addr.path("leisure").asText()
+                    : addr.has("water") ? addr.path("water").asText()
+                    : addr.has("lake") ? addr.path("lake").asText()
+                    : addr.has("tourism") ? addr.path("tourism").asText()
+                    : addr.has("amenity") ? addr.path("amenity").asText()
+                    : addr.has("natural") ? addr.path("natural").asText() : "";
 
-            String state = addr.has("state") ? addr.path("state").asText() : "";
-            String country = addr.has("country") ? addr.path("country").asText() : "";
+            String suburb = addr.has("suburb") ? addr.path("suburb").asText()
+                    : addr.has("neighbourhood") ? addr.path("neighbourhood").asText() : "";
 
+            String city = extractCity(addr);
+
+            // If Nominatim has a name field directly
+            String directName = item.has("name") && !item.path("name").asText().isEmpty() 
+                    ? item.path("name").asText() : "";
+
+            if (!directName.isEmpty()) {
+                if (!city.isEmpty() && !directName.toLowerCase().contains(city.toLowerCase())) {
+                    return directName + ", " + city;
+                }
+                return directName;
+            }
+
+            if (!landmark.isEmpty()) {
+                return !city.isEmpty() ? landmark + ", " + city : landmark;
+            }
+
+            if (!suburb.isEmpty() && !city.isEmpty() && !suburb.equalsIgnoreCase(city)) {
+                return suburb + ", " + city;
+            }
             if (!city.isEmpty()) {
-                if (!state.isEmpty() && !country.isEmpty()) return city + ", " + state + ", " + country;
-                if (!state.isEmpty()) return city + ", " + state;
-                return city;
+                String state = addr.has("state") ? addr.path("state").asText() : "";
+                return !state.isEmpty() ? city + ", " + state : city;
             }
         }
+
+        String displayName = item.path("display_name").asText();
         String[] parts = displayName.split(",");
-        if (parts.length >= 3) {
-            return parts[0].trim() + ", " + parts[1].trim() + ", " + parts[parts.length - 1].trim();
+        if (parts.length >= 2) {
+            return parts[0].trim() + ", " + parts[1].trim();
         }
         return displayName;
     }
 
-    private String extractLocality(JsonNode addr) {
+    private String extractCity(JsonNode addr) {
         if (addr == null || addr.isMissingNode()) return "";
-        String place = addr.has("suburb") ? addr.path("suburb").asText()
-                : addr.has("neighbourhood") ? addr.path("neighbourhood").asText()
-                : addr.has("city") ? addr.path("city").asText()
-                : addr.has("town") ? addr.path("town").asText() : "";
-
-        String city = addr.has("city") ? addr.path("city").asText()
+        return addr.has("city") ? addr.path("city").asText()
+                : addr.has("town") ? addr.path("town").asText()
+                : addr.has("municipality") ? addr.path("municipality").asText()
+                : addr.has("village") ? addr.path("village").asText()
                 : addr.has("county") ? addr.path("county").asText() : "";
-        String state = addr.has("state") ? addr.path("state").asText() : "";
+    }
 
-        if (!place.isEmpty() && !city.isEmpty() && !place.equalsIgnoreCase(city)) {
-            return place + ", " + city;
+    private String determinePrecision(JsonNode item) {
+        String clazz = item.path("class").asText("");
+        String type = item.path("type").asText("");
+        if ("leisure".equals(clazz) || "tourism".equals(clazz) || "amenity".equals(clazz) || "natural".equals(clazz) || "water".equals(type)) {
+            return "exact_landmark";
         }
-        if (!city.isEmpty() && !state.isEmpty()) {
-            return city + ", " + state;
+        if ("suburb".equals(type) || "neighbourhood".equals(type) || "residential".equals(type)) {
+            return "locality";
         }
-        return place.isEmpty() ? city : place;
+        return "city_level";
     }
 }

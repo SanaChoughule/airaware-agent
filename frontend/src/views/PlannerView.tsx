@@ -9,17 +9,20 @@ import {
   ShieldAlert,
   ChevronRight,
   TrendingDown,
-  RefreshCw
+  RefreshCw,
+  Loader2,
+  Check
 } from 'lucide-react';
 import { DailyPlanResponse, PlanAction, HouseholdPreferences } from '../types';
 
 interface PlannerViewProps {
   plan: DailyPlanResponse | null;
   loading: boolean;
-  onRefreshPlan: () => void;
+  onRefreshPlan: () => Promise<void> | void;
   onToggleAction: (actionId: string) => void;
   completedActions: string[];
   preferences: HouseholdPreferences;
+  locationName?: string;
 }
 
 export const PlannerView: React.FC<PlannerViewProps> = ({
@@ -29,8 +32,24 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   onToggleAction,
   completedActions,
   preferences,
+  locationName = 'Selected Area',
 }) => {
-  const [selectedAction, setSelectedAction] = useState<PlanAction | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
+  const [successNotice, setSuccessNotice] = useState(false);
+
+  const handleRegenerate = async () => {
+    setRegenerating(true);
+    setSuccessNotice(false);
+    try {
+      await onRefreshPlan();
+      setSuccessNotice(true);
+      setTimeout(() => setSuccessNotice(false), 2500);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setRegenerating(false);
+    }
+  };
 
   if (loading || !plan) {
     return (
@@ -55,7 +74,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
               {plan.riskLevel}
             </span>
             <span className="text-xs text-[#9BA69B]">
-              Best Window: <strong className="text-[#F2F5F1]">{plan.bestOutdoorWindow}</strong>
+              Best Outdoor Window for <strong className="text-[#F2F5F1]">{locationName}</strong>: <strong className="text-[#B7F56A]">{plan.bestOutdoorWindow}</strong>
             </span>
           </div>
           <h2 className="text-xl md:text-2xl font-bold text-[#F2F5F1] tracking-tight">
@@ -66,18 +85,26 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={onRefreshPlan}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#1B231C] hover:bg-[#273128] text-[#B7F56A] border border-[#344A35] text-xs font-semibold self-start md:self-auto transition-all shadow-md"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          <span>Regenerate Routine</span>
-        </button>
+        <div className="flex flex-col sm:flex-row items-center gap-2">
+          {successNotice && (
+            <span className="text-xs text-[#65C46D] flex items-center gap-1">
+              <Check className="w-3.5 h-3.5" /> Routine Updated!
+            </span>
+          )}
+          <button
+            onClick={handleRegenerate}
+            disabled={regenerating}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#1B231C] hover:bg-[#273128] text-[#B7F56A] border border-[#344A35] text-xs font-semibold self-start md:self-auto transition-all shadow-md disabled:opacity-50"
+          >
+            {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            <span>{regenerating ? 'Regenerating...' : 'Regenerate Routine'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Routine Sections */}
       <div className="space-y-5">
-        {plan.routineSections.map((section) => (
+        {plan.routineSections && plan.routineSections.map((section) => (
           <div key={section.timeOfDay} className="p-5 md:p-6 rounded-3xl bg-[#151B16] border border-[#273128]">
             <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#273128]">
               <div className="flex items-center gap-2.5">
@@ -89,12 +116,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                 </div>
               </div>
               <span className="text-xs text-[#9BA69B]">
-                {section.actions.length} action{section.actions.length > 1 ? 's' : ''}
+                {section.actions?.length || 0} action{(section.actions?.length || 0) > 1 ? 's' : ''}
               </span>
             </div>
 
             <div className="space-y-3">
-              {section.actions.map((act) => {
+              {section.actions && section.actions.map((act) => {
                 const isCompleted = completedActions.includes(act.id);
                 return (
                   <div

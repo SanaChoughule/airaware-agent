@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   MapContainer,
   TileLayer,
@@ -39,12 +39,28 @@ interface MapViewProps {
   savedLocations: SavedLocation[];
 }
 
-// Controller component to smoothly reposition map when active location changes
-function MapController({ center, zoom }: { center: [number, number]; zoom: number }) {
+// Controller component to smoothly reposition map ONLY when active coordinates change significantly
+function MapController({ center }: { center: [number, number] }) {
   const map = useMap();
+  const lastCenterRef = useRef<[number, number] | null>(null);
+
   useEffect(() => {
-    map.flyTo(center, zoom, { duration: 1.2 });
-  }, [center, zoom, map]);
+    if (!lastCenterRef.current) {
+      lastCenterRef.current = center;
+      map.setView(center, map.getZoom());
+      return;
+    }
+    const [lastLat, lastLng] = lastCenterRef.current;
+    const [newLat, newLng] = center;
+    const distanceMoved = Math.hypot(newLat - lastLat, newLng - lastLng);
+    // Only animate if center coordinate moved by more than ~50 meters (0.0005 deg)
+    // This strictly prevents map zoom resets during user interaction/hovering
+    if (distanceMoved > 0.0005) {
+      lastCenterRef.current = center;
+      map.flyTo(center, map.getZoom(), { duration: 1.2 });
+    }
+  }, [center, map]);
+
   return null;
 }
 
@@ -74,7 +90,6 @@ export const MapView: React.FC<MapViewProps> = ({
 }) => {
   // Tile Layer mode: 'satellite' | 'dark' | 'streets'
   const [mapLayer, setMapLayer] = useState<'satellite' | 'dark' | 'streets'>('satellite');
-  const [zoomLevel, setZoomLevel] = useState(11);
 
   // Active coordinates
   const currentLat = currentData?.latitude || 19.0760;
@@ -90,8 +105,8 @@ export const MapView: React.FC<MapViewProps> = ({
     zoneName: string;
   } | null>(null);
 
-  // Comparison State
-  const [showComparisonModal, setShowComparisonModal] = useState(false);
+  // Comparison Panel State (Split side-by-side or collapsible drawer instead of blocking modal)
+  const [showComparisonPanel, setShowComparisonPanel] = useState(false);
   const [compareQuery, setCompareQuery] = useState('');
   const [isSearchingCompare, setIsSearchingCompare] = useState(false);
   const [compareResults, setCompareResults] = useState<any[]>([]);
@@ -249,11 +264,11 @@ export const MapView: React.FC<MapViewProps> = ({
   const tileLayers = {
     satellite: {
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      attribution: 'Tiles &copy; Esri, Maxar, Earthstar Geographics, USDA, USGS',
+      attribution: '&copy; Esri &mdash; Earthstar Geographics',
     },
     dark: {
       url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      attribution: '&copy; OpenStreetMap & CartoDB',
     },
     streets: {
       url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -261,43 +276,39 @@ export const MapView: React.FC<MapViewProps> = ({
     },
   };
 
-  // Hover tracker math: calculates real-time spatial atmospheric estimate over terrain
+  // Hover interpolation logic
   const handleMapHover = (lat: number, lng: number) => {
+    const distFromCenter = Math.hypot(lat - currentLat, lng - currentLng);
     const baseAqi = currentData?.aqi || 114;
-    // Spatial diurnal variation based on terrain offset
-    const dLat = (lat - currentLat) * 100;
-    const dLng = (lng - currentLng) * 100;
-    const delta = Math.round(Math.sin(dLat) * 18 + Math.cos(dLng) * 14);
-    const estAqi = Math.max(25, baseAqi + delta);
-
+    const estimatedAqi = Math.max(30, Math.min(450, Math.round(baseAqi * (1 + (lat - currentLat) * 2 - (lng - currentLng) * 1.5))));
     let category = 'Moderate';
-    if (estAqi <= 50) category = 'Good';
-    else if (estAqi <= 100) category = 'Moderate';
-    else if (estAqi <= 200) category = 'Poor';
-    else if (estAqi <= 300) category = 'Very Poor';
+    if (estimatedAqi <= 50) category = 'Good';
+    else if (estimatedAqi <= 100) category = 'Moderate';
+    else if (estimatedAqi <= 200) category = 'Poor';
+    else if (estimatedAqi <= 300) category = 'Very Poor';
     else category = 'Severe';
+
+    let zoneName = 'Regional Atmospheric Microclimate';
+    if (distFromCenter < 0.015) zoneName = `${currentLocName.split(',')[0]} Immediate Vicinity`;
+    else if (lat > currentLat) zoneName = 'Northern Inversion Corridor';
+    else zoneName = 'Southern Basin Drift';
 
     setHoveredInfo({
       lat,
       lng,
-      estimatedAqi: estAqi,
+      estimatedAqi,
       category,
-      zoneName: `Sector (${lat.toFixed(3)}°N, ${lng.toFixed(3)}°E)`,
+      zoneName,
     });
   };
 
-  const handleMapClick = async (lat: number, lng: number) => {
-    try {
-      const res = await fetch(`/api/locations/reverse-geocode?latitude=${lat}&longitude=${lng}`);
-      const data = await res.json();
-      const name = data.formattedAddress || `Coordinates (${lat.toFixed(3)}, ${lng.toFixed(3)})`;
-      onSelectCoords(lat, lng, name);
-    } catch {
-      onSelectCoords(lat, lng, `Coordinates (${lat.toFixed(3)}, ${lng.toFixed(3)})`);
-    }
+  // Map click handler: allows clicking anywhere on map to re-center
+  const handleMapClick = (lat: number, lng: number) => {
+    const clickedName = `Coordinates (${lat.toFixed(3)}, ${lng.toFixed(3)})`;
+    onSelectCoords(lat, lng, clickedName);
   };
 
-  // Comparison Handlers
+  // Comparison search
   const handleSearchCompare = async (q: string) => {
     setCompareQuery(q);
     if (q.trim().length < 2) {
@@ -307,23 +318,24 @@ export const MapView: React.FC<MapViewProps> = ({
     setIsSearchingCompare(true);
     try {
       const res = await apiService.searchLocations(q.trim());
-      setCompareResults(res);
-    } catch (err) {
-      console.error(err);
+      setCompareResults(res.slice(0, 5));
+    } catch (e) {
+      console.error(e);
     } finally {
       setIsSearchingCompare(false);
     }
   };
 
-  const handleSelectCompareTarget = async (item: any) => {
-    setLoadingCompareData(true);
+  const handleSelectCompareTarget = async (loc: any) => {
+    setCompareQuery(loc.name);
     setCompareResults([]);
-    setCompareQuery(item.name || item.displayName);
+    setLoadingCompareData(true);
     try {
-      const data = await apiService.getCurrentAirQuality(item.latitude, item.longitude);
+      const data = await apiService.getCurrentAirQuality(loc.latitude, loc.longitude);
+      data.locationName = loc.displayName || loc.name;
       setTargetCompareData(data);
-    } catch (err) {
-      console.error(err);
+    } catch (e) {
+      console.error(e);
     } finally {
       setLoadingCompareData(false);
     }
@@ -331,186 +343,374 @@ export const MapView: React.FC<MapViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top Map Context & Layer Controls */}
-      <div className="p-6 rounded-3xl bg-[#151B16] border border-[#273128] flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-[#1B231C] text-[#B7F56A] border border-[#344A35]">
-              Satellite Environmental Sensing
-            </span>
-            <span className="text-xs text-[#9BA69B]">
-              Active: <strong className="text-[#F2F5F1]">{currentLocName}</strong>
-            </span>
+      {/* Top Map Control Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-3xl bg-[#151B16] border border-[#273128]">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-[#1B231C] border border-[#344A35] flex items-center justify-center text-[#B7F56A]">
+            <Globe className="w-5 h-5" />
           </div>
-          <h2 className="text-xl font-bold text-[#F2F5F1]">Interactive Satellite Air Quality Map</h2>
-          <p className="text-xs text-[#9BA69B]">
-            Hover anywhere on the satellite imagery to inspect atmospheric quality across microclimates.
-          </p>
+          <div>
+            <h2 className="text-base font-bold text-[#F2F5F1] flex items-center gap-2">
+              Atmospheric Geospatial Map
+              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-[#1B231C] text-[#B7F56A] border border-[#344A35]">
+                Live Satellite Telemetry
+              </span>
+            </h2>
+            <p className="text-xs text-[#9BA69B]">
+              Monitoring station grid around <strong className="text-[#F2F5F1]">{currentLocName}</strong>
+            </p>
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Compare Locations Action Button */}
-          <button
-            onClick={() => setShowComparisonModal(true)}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#1B231C] hover:bg-[#273128] text-[#B7F56A] border border-[#344A35] text-xs font-semibold transition-all shadow-md"
-          >
-            <GitCompare className="w-3.5 h-3.5" />
-            <span>Compare Air Quality</span>
-          </button>
-
-          {/* Layer Switcher Buttons */}
-          <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-[#101510] border border-[#273128]">
+        {/* Controls: Tile Selector & Compare Mode */}
+        <div className="flex items-center gap-2">
+          {/* Layer switcher */}
+          <div className="flex items-center bg-[#101510] border border-[#273128] rounded-2xl p-1 gap-1">
             <button
               onClick={() => setMapLayer('satellite')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all ${
                 mapLayer === 'satellite'
-                  ? 'bg-[#B7F56A] text-[#080B09] shadow-md shadow-[#B7F56A]/20'
+                  ? 'bg-[#B7F56A] text-[#080B09] font-bold shadow-md shadow-[#B7F56A]/20'
                   : 'text-[#9BA69B] hover:text-[#F2F5F1]'
               }`}
             >
               <Satellite className="w-3.5 h-3.5" />
               <span>Satellite</span>
             </button>
-
             <button
               onClick={() => setMapLayer('dark')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all ${
                 mapLayer === 'dark'
-                  ? 'bg-[#B7F56A] text-[#080B09] shadow-md shadow-[#B7F56A]/20'
+                  ? 'bg-[#B7F56A] text-[#080B09] font-bold shadow-md shadow-[#B7F56A]/20'
                   : 'text-[#9BA69B] hover:text-[#F2F5F1]'
               }`}
             >
               <Layers className="w-3.5 h-3.5" />
-              <span>Dark Carto</span>
+              <span>Dark Vector</span>
             </button>
-
             <button
               onClick={() => setMapLayer('streets')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all ${
                 mapLayer === 'streets'
-                  ? 'bg-[#B7F56A] text-[#080B09] shadow-md shadow-[#B7F56A]/20'
+                  ? 'bg-[#B7F56A] text-[#080B09] font-bold shadow-md shadow-[#B7F56A]/20'
                   : 'text-[#9BA69B] hover:text-[#F2F5F1]'
               }`}
             >
-              <Globe className="w-3.5 h-3.5" />
-              <span>Streets</span>
+              <Navigation className="w-3.5 h-3.5" />
+              <span>Street Grid</span>
             </button>
           </div>
+
+          {/* Toggle Air Quality Comparison split layout */}
+          <button
+            onClick={() => setShowComparisonPanel(!showComparisonPanel)}
+            className={`px-4 py-2 rounded-2xl text-xs font-bold border transition-all flex items-center gap-2 ${
+              showComparisonPanel
+                ? 'bg-[#B7F56A] text-[#080B09] border-[#B7F56A] shadow-md shadow-[#B7F56A]/20'
+                : 'bg-[#1B231C] text-[#F2F5F1] hover:text-[#B7F56A] border-[#273128]'
+            }`}
+          >
+            <GitCompare className="w-4 h-4" />
+            <span>{showComparisonPanel ? 'Hide Comparison' : 'Compare Air Quality'}</span>
+          </button>
         </div>
       </div>
 
-      {/* Main Leaflet Satellite Map View */}
-      <div className="relative h-[580px] rounded-3xl overflow-hidden border border-[#273128] shadow-2xl">
-        <MapContainer
-          center={[currentLat, currentLng]}
-          zoom={zoomLevel}
-          scrollWheelZoom={true}
-          className="w-full h-full"
-        >
-          <MapController center={[currentLat, currentLng]} zoom={zoomLevel} />
-          <MapEventsTracker onHover={handleMapHover} onClick={handleMapClick} />
-
-          <TileLayer
-            key={mapLayer}
-            url={tileLayers[mapLayer].url}
-            attribution={tileLayers[mapLayer].attribution}
-            maxZoom={19}
-          />
-
-          {/* Atmospheric dispersion radius circles */}
-          <Circle
+      {/* Main Map + Comparison Container (Responsive Split Layout) */}
+      <div className={`grid gap-6 transition-all duration-300 ${showComparisonPanel ? 'grid-cols-1 lg:grid-cols-12' : 'grid-cols-1'}`}>
+        
+        {/* Leaflet Map Card (Resizes gracefully to 7 or 12 columns) */}
+        <div className={`relative h-[580px] rounded-3xl overflow-hidden border border-[#273128] shadow-2xl transition-all duration-300 ${
+          showComparisonPanel ? 'lg:col-span-7' : 'w-full'
+        }`}>
+          <MapContainer
             center={[currentLat, currentLng]}
-            radius={2800}
-            pathOptions={{
-              color: getAqiColor(currentData?.aqi || 114),
-              fillColor: getAqiColor(currentData?.aqi || 114),
-              fillOpacity: 0.18,
-              weight: 2,
-            }}
-          />
+            zoom={11}
+            scrollWheelZoom={true}
+            className="w-full h-full"
+          >
+            <MapController center={[currentLat, currentLng]} />
+            <MapEventsTracker onHover={handleMapHover} onClick={handleMapClick} />
 
-          {/* Regional Monitoring Stations with FULL NAME + AQI BADGE */}
-          {nearbyStations.map((st) => (
-            <Marker
-              key={st.id}
-              position={[st.lat, st.lng]}
-              icon={createNamedAqiIcon(st.name, st.aqi, st.id === 'st-center')}
-            >
-              <Popup>
-                <div className="p-2 space-y-2 text-xs">
-                  <div className="flex items-center justify-between gap-2 border-b border-[#273128] pb-1.5">
-                    <span
-                      className="font-bold px-2 py-0.5 rounded text-[#080B09] text-[10px]"
-                      style={{ backgroundColor: getAqiColor(st.aqi) }}
+            <TileLayer
+              key={mapLayer}
+              url={tileLayers[mapLayer].url}
+              attribution={tileLayers[mapLayer].attribution}
+              maxZoom={19}
+            />
+
+            {/* Atmospheric dispersion radius circles */}
+            <Circle
+              center={[currentLat, currentLng]}
+              radius={2800}
+              pathOptions={{
+                color: getAqiColor(currentData?.aqi || 114),
+                fillColor: getAqiColor(currentData?.aqi || 114),
+                fillOpacity: 0.18,
+                weight: 2,
+              }}
+            />
+
+            {/* Regional Monitoring Stations with FULL NAME + AQI BADGE */}
+            {nearbyStations.map((st) => (
+              <Marker
+                key={st.id}
+                position={[st.lat, st.lng]}
+                icon={createNamedAqiIcon(st.name, st.aqi, st.id === 'st-center')}
+              >
+                <Popup>
+                  <div className="p-2 space-y-2 text-xs">
+                    <div className="flex items-center justify-between gap-2 border-b border-[#273128] pb-1.5">
+                      <span
+                        className="font-bold px-2 py-0.5 rounded text-[#080B09] text-[10px]"
+                        style={{ backgroundColor: getAqiColor(st.aqi) }}
+                      >
+                        AQI {st.aqi} • {st.category}
+                      </span>
+                      <span className="text-[10px] text-[#9BA69B] uppercase font-bold">
+                        {st.type}
+                      </span>
+                    </div>
+
+                    <div>
+                      <h4 className="font-bold text-[#F2F5F1] text-sm">{st.name}</h4>
+                      <p className="text-[11px] text-[#9BA69B] mt-0.5">
+                        Sub-area: <strong className="text-[#F2F5F1]">{st.locality}</strong>
+                      </p>
+                      <p className="text-[11px] text-[#9BA69B]">
+                        Dominant: <strong className="text-[#F2F5F1]">{st.dominant}</strong>
+                      </p>
+                      <p className="text-[10px] text-[#9BA69B]">
+                        Lat: {st.lat.toFixed(4)}, Lng: {st.lng.toFixed(4)}
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() => onSelectCoords(st.lat, st.lng, st.name)}
+                      className="w-full mt-2 py-1.5 px-3 rounded-xl bg-[#B7F56A] text-[#080B09] font-bold text-[11px] hover:bg-[#65C46D] transition-colors"
                     >
-                      AQI {st.aqi} • {st.category}
-                    </span>
-                    <span className="text-[10px] text-[#9BA69B] uppercase font-bold">
-                      {st.type}
-                    </span>
+                      Set as Dashboard Location
+                    </button>
                   </div>
+                </Popup>
+              </Marker>
+            ))}
+          </MapContainer>
 
-                  <div>
-                    <h4 className="font-bold text-[#F2F5F1] text-sm">{st.name}</h4>
-                    <p className="text-[11px] text-[#9BA69B] mt-0.5">
-                      Sub-area: <strong className="text-[#F2F5F1]">{st.locality}</strong>
-                    </p>
-                    <p className="text-[11px] text-[#9BA69B]">
-                      Dominant: <strong className="text-[#F2F5F1]">{st.dominant}</strong>
-                    </p>
-                    <p className="text-[10px] text-[#9BA69B]">
-                      Lat: {st.lat.toFixed(4)}, Lng: {st.lng.toFixed(4)}
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => onSelectCoords(st.lat, st.lng, st.name)}
-                    className="w-full mt-2 py-1.5 px-3 rounded-xl bg-[#B7F56A] text-[#080B09] font-bold text-[11px] hover:bg-[#65C46D] transition-colors"
-                  >
-                    Set as Dashboard Location
-                  </button>
-                </div>
-              </Popup>
-            </Marker>
-          ))}
-        </MapContainer>
-
-        {/* Real-time Hover HUD (Floating Inspector at Top Center) */}
-        {hoveredInfo && (
-          <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] px-4 py-2 rounded-2xl bg-[#080B09]/95 border border-[#B7F56A]/60 backdrop-blur-md shadow-2xl flex items-center gap-3 text-xs pointer-events-none transition-all">
-            <Crosshair className="w-4 h-4 text-[#B7F56A] animate-spin" style={{ animationDuration: '6s' }} />
-            <div className="flex items-center gap-2">
-              <span className="text-[#9BA69B]">{hoveredInfo.zoneName}</span>
-              <span className="text-white font-mono font-bold">Lat: {hoveredInfo.lat.toFixed(3)}, Lng: {hoveredInfo.lng.toFixed(3)}</span>
+          {/* Real-time Hover HUD (Floating Inspector at Top Center) */}
+          {hoveredInfo && (
+            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] px-4 py-2 rounded-2xl bg-[#080B09]/95 border border-[#B7F56A]/60 backdrop-blur-md shadow-2xl flex items-center gap-3 text-xs pointer-events-none transition-all max-w-[90%] truncate">
+              <Crosshair className="w-4 h-4 text-[#B7F56A] animate-spin shrink-0" style={{ animationDuration: '6s' }} />
+              <div className="flex items-center gap-2 truncate">
+                <span className="text-[#9BA69B] truncate">{hoveredInfo.zoneName}</span>
+                <span className="text-white font-mono font-bold shrink-0">Lat: {hoveredInfo.lat.toFixed(3)}, Lng: {hoveredInfo.lng.toFixed(3)}</span>
+              </div>
+              <div
+                className="px-2 py-0.5 rounded-lg text-xs font-black text-[#080B09] shrink-0"
+                style={{ backgroundColor: getAqiColor(hoveredInfo.estimatedAqi) }}
+              >
+                AQI {hoveredInfo.estimatedAqi} ({hoveredInfo.category})
+              </div>
             </div>
-            <div
-              className="px-2 py-0.5 rounded-lg text-xs font-black text-[#080B09]"
-              style={{ backgroundColor: getAqiColor(hoveredInfo.estimatedAqi) }}
-            >
-              Estimated AQI {hoveredInfo.estimatedAqi} ({hoveredInfo.category})
-            </div>
-          </div>
-        )}
+          )}
 
-        {/* Legend Overlay Floating Pill */}
-        <div className="absolute bottom-4 left-4 z-[1000] p-3 rounded-2xl bg-[#080B09]/90 border border-[#273128] backdrop-blur-md shadow-2xl space-y-1.5 text-xs">
-          <div className="text-[10px] uppercase font-bold tracking-wider text-[#9BA69B] mb-1">
-            AQI Particulate Scale
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#65C46D]" />
-            <span className="text-[11px] text-[#F2F5F1]">Good (0–50)</span>
-            <span className="w-2.5 h-2.5 rounded-full bg-[#FACC15] ml-2" />
-            <span className="text-[11px] text-[#F2F5F1]">Moderate (51–100)</span>
-            <span className="w-2.5 h-2.5 rounded-full bg-[#FB923C] ml-2" />
-            <span className="text-[11px] text-[#F2F5F1]">Poor (101–200)</span>
-            <span className="w-2.5 h-2.5 rounded-full bg-[#EF4444] ml-2" />
-            <span className="text-[11px] text-[#F2F5F1]">Severe (200+)</span>
-          </div>
-          <div className="text-[10px] text-[#9BA69B] pt-0.5">
-            Hover cursor over satellite terrain to view microclimate AQI. Click anywhere to re-center.
+          {/* Legend Overlay Floating Pill */}
+          <div className="absolute bottom-4 left-4 z-[1000] p-3 rounded-2xl bg-[#080B09]/90 border border-[#273128] backdrop-blur-md shadow-2xl space-y-1.5 text-xs max-w-xs sm:max-w-md">
+            <div className="text-[10px] uppercase font-bold tracking-wider text-[#9BA69B] mb-1">
+              AQI Particulate Scale
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#65C46D]" />
+                <span className="text-[10px] text-[#F2F5F1]">Good (0–50)</span>
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#FACC15]" />
+                <span className="text-[10px] text-[#F2F5F1]">Moderate (51–100)</span>
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#FB923C]" />
+                <span className="text-[10px] text-[#F2F5F1]">Poor (101–200)</span>
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#EF4444]" />
+                <span className="text-[10px] text-[#F2F5F1]">Severe (200+)</span>
+              </span>
+            </div>
           </div>
         </div>
+
+        {/* Side-by-Side Comparison Panel (5 columns when open, giving full visibility to both map & metrics) */}
+        {showComparisonPanel && (
+          <div className="lg:col-span-5 flex flex-col h-[580px] rounded-3xl bg-[#151B16] border border-[#273128] p-5 overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-[#273128]">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-xl bg-[#1B231C] border border-[#344A35] flex items-center justify-center text-[#B7F56A]">
+                  <GitCompare className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#F2F5F1]">Air Quality Comparison</h3>
+                  <p className="text-[11px] text-[#9BA69B]">Compare live pollution across two locations</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowComparisonPanel(false)}
+                className="p-1 rounded-lg text-[#9BA69B] hover:text-white"
+                title="Close Comparison"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Comparison Search Input */}
+            <div className="pt-3 pb-2">
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-[#9BA69B] mb-1.5 block">
+                Compare Against:
+              </label>
+
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-[#9BA69B]" />
+                <input
+                  type="text"
+                  placeholder="Type city or landmark (e.g. Pune, Satara, Delhi)..."
+                  value={compareQuery}
+                  onChange={(e) => handleSearchCompare(e.target.value)}
+                  className="w-full bg-[#101510] border border-[#273128] focus:border-[#B7F56A] rounded-xl pl-9 pr-4 py-2 text-xs text-[#F2F5F1] focus:outline-none"
+                />
+
+                {isSearchingCompare && (
+                  <Loader2 className="w-3.5 h-3.5 text-[#B7F56A] animate-spin absolute right-3 top-2.5" />
+                )}
+
+                {compareResults.length > 0 && (
+                  <div className="absolute left-0 right-0 mt-1 bg-[#101510] border border-[#273128] rounded-xl shadow-xl overflow-hidden z-20 max-h-40 overflow-y-auto">
+                    {compareResults.map((r, i) => (
+                      <button
+                        key={i}
+                        onClick={() => handleSelectCompareTarget(r)}
+                        className="w-full text-left px-3 py-2 text-xs hover:bg-[#1B231C] border-b border-[#273128]/40 last:border-0 flex items-center justify-between"
+                      >
+                        <span className="text-[#F2F5F1] font-medium">{r.name}</span>
+                        <span className="text-[10px] text-[#9BA69B] truncate max-w-[150px]">{r.displayName}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Side-by-side Comparative Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 my-3">
+              {/* Location A (Active) */}
+              <div className="p-3.5 rounded-2xl bg-[#101510] border border-[#273128] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-[#1B231C] text-[#B7F56A] border border-[#344A35]">
+                    Active Location
+                  </span>
+                  <span
+                    className="text-xs font-bold px-1.5 py-0.5 rounded text-[#080B09]"
+                    style={{ backgroundColor: getAqiColor(currentData?.aqi || 114) }}
+                  >
+                    AQI {currentData?.aqi || 114}
+                  </span>
+                </div>
+                <h4 className="text-xs font-bold text-[#F2F5F1] truncate" title={currentLocName}>
+                  {currentLocName}
+                </h4>
+                <div className="space-y-1 text-[11px] text-[#9BA69B]">
+                  <div className="flex justify-between">
+                    <span>Category:</span>
+                    <strong className="text-[#F2F5F1]">{currentData?.category || 'Moderate'}</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Dominant:</span>
+                    <strong className="text-[#F2F5F1]">{currentData?.dominantPollutant || 'PM2.5'}</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>PM2.5:</span>
+                    <strong className="text-[#F2F5F1]">{currentData?.pollutants?.['PM2.5']?.value || 28.9} µg/m³</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Location B (Queried Target) */}
+              <div className="p-3.5 rounded-2xl bg-[#101510] border border-[#273128] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-[#1B231C] text-[#65C46D] border border-[#344A35]">
+                    Comparison Target
+                  </span>
+                  {targetCompareData && (
+                    <span
+                      className="text-xs font-bold px-1.5 py-0.5 rounded text-[#080B09]"
+                      style={{ backgroundColor: getAqiColor(targetCompareData.aqi) }}
+                    >
+                      AQI {targetCompareData.aqi}
+                    </span>
+                  )}
+                </div>
+
+                {loadingCompareData ? (
+                  <div className="py-6 flex flex-col items-center justify-center gap-1.5 text-xs text-[#9BA69B]">
+                    <Loader2 className="w-4 h-4 text-[#B7F56A] animate-spin" />
+                    <span>Fetching live data...</span>
+                  </div>
+                ) : targetCompareData ? (
+                  <>
+                    <h4 className="text-xs font-bold text-[#F2F5F1] truncate" title={targetCompareData.locationName}>
+                      {targetCompareData.locationName}
+                    </h4>
+                    <div className="space-y-1 text-[11px] text-[#9BA69B]">
+                      <div className="flex justify-between">
+                        <span>Category:</span>
+                        <strong className="text-[#F2F5F1]">{targetCompareData.category}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Dominant:</span>
+                        <strong className="text-[#F2F5F1]">{targetCompareData.dominantPollutant}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>PM2.5:</span>
+                        <strong className="text-[#F2F5F1]">{targetCompareData.pollutants?.['PM2.5']?.value || '—'} µg/m³</strong>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        onSelectCoords(targetCompareData.latitude, targetCompareData.longitude, targetCompareData.locationName);
+                      }}
+                      className="w-full mt-2 py-1 px-2 rounded-xl bg-[#B7F56A] text-[#080B09] font-bold text-[10px] hover:bg-[#65C46D] transition-colors"
+                    >
+                      Switch Dashboard Here
+                    </button>
+                  </>
+                ) : (
+                  <div className="py-6 text-center text-[11px] text-[#9BA69B]">
+                    Search an area above to view metrics
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Verdict Box */}
+            {targetCompareData && (
+              <div className="p-3 rounded-2xl bg-[#1B231C] border border-[#344A35] text-xs space-y-1 mt-auto">
+                <div className="font-bold text-[#B7F56A] flex items-center gap-1.5 text-[11px]">
+                  <CheckCircle className="w-3.5 h-3.5" /> Environmental Verdict
+                </div>
+                <p className="text-[#F2F5F1] text-[11px] leading-relaxed">
+                  {targetCompareData.aqi < (currentData?.aqi || 114) ? (
+                    <>
+                      <strong>{targetCompareData.locationName}</strong> has cleaner air (AQI {targetCompareData.aqi}) than {currentLocName} (AQI {currentData?.aqi || 114}). PM2.5 levels are noticeably lower.
+                    </>
+                  ) : (
+                    <>
+                      <strong>{targetCompareData.locationName}</strong> has higher particulate density (AQI {targetCompareData.aqi}) than {currentLocName} (AQI {currentData?.aqi || 114}).
+                    </>
+                  )}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Regional Stations Comparison Grid */}
@@ -558,195 +758,6 @@ export const MapView: React.FC<MapViewProps> = ({
           ))}
         </div>
       </div>
-
-      {/* Air Quality Comparison Modal */}
-      {showComparisonModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="bg-[#151B16] border border-[#273128] rounded-3xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl relative">
-            <div className="flex items-center justify-between pb-4 border-b border-[#273128]">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-[#1B231C] border border-[#344A35] flex items-center justify-center text-[#B7F56A]">
-                  <GitCompare className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-[#F2F5F1]">Air Quality Location Comparison</h3>
-                  <p className="text-xs text-[#9BA69B]">
-                    Compare real-time pollution metrics, PM2.5 concentrations, and outdoor safety between two locations
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowComparisonModal(false)}
-                className="p-1 rounded-lg text-[#9BA69B] hover:text-white"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Comparison Search Input */}
-            <div className="pt-4 pb-2">
-              <label className="text-xs font-semibold uppercase tracking-wider text-[#9BA69B] mb-2 block">
-                Select a Location to Compare against <strong className="text-[#F2F5F1]">{currentLocName}</strong>
-              </label>
-
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3.5 top-3 text-[#9BA69B]" />
-                <input
-                  type="text"
-                  placeholder="Type city or area to compare (e.g. Pune, Delhi, Satara, Nashik)..."
-                  value={compareQuery}
-                  onChange={(e) => handleSearchCompare(e.target.value)}
-                  className="w-full bg-[#101510] border border-[#273128] focus:border-[#B7F56A] rounded-xl pl-10 pr-4 py-2.5 text-xs text-[#F2F5F1] focus:outline-none"
-                />
-                {isSearchingCompare && (
-                  <Loader2 className="w-4 h-4 text-[#B7F56A] animate-spin absolute right-3.5 top-3" />
-                )}
-
-                {compareResults.length > 0 && (
-                  <div className="absolute left-0 right-0 mt-1.5 bg-[#101510] border border-[#273128] rounded-xl shadow-xl overflow-hidden z-20 max-h-48 overflow-y-auto">
-                    {compareResults.map((r, i) => (
-                      <button
-                        key={i}
-                        onClick={() => handleSelectCompareTarget(r)}
-                        className="w-full text-left px-3.5 py-2 text-xs hover:bg-[#1B231C] border-b border-[#273128]/40 last:border-0 flex items-center justify-between"
-                      >
-                        <span className="text-[#F2F5F1]">{r.name}</span>
-                        <span className="text-[10px] text-[#9BA69B]">{r.displayName}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Side-by-side Comparative Analysis Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 my-4">
-              {/* Location A (Active) */}
-              <div className="p-4 rounded-2xl bg-[#101510] border border-[#273128] space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-[#1B231C] text-[#B7F56A] border border-[#344A35]">
-                    Current Active Location
-                  </span>
-                  <span
-                    className="text-xs font-bold px-2 py-0.5 rounded text-[#080B09]"
-                    style={{ backgroundColor: getAqiColor(currentData?.aqi || 114) }}
-                  >
-                    AQI {currentData?.aqi || 114}
-                  </span>
-                </div>
-                <h4 className="text-sm font-bold text-[#F2F5F1]">{currentLocName}</h4>
-                <div className="space-y-1.5 text-xs text-[#9BA69B]">
-                  <div className="flex justify-between">
-                    <span>Category:</span>
-                    <strong className="text-[#F2F5F1]">{currentData?.category || 'Moderate'}</strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Dominant Pollutant:</span>
-                    <strong className="text-[#F2F5F1]">{currentData?.dominantPollutant || 'PM2.5'}</strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>PM2.5:</span>
-                    <strong className="text-[#F2F5F1]">
-                      {currentData?.pollutants?.['PM2.5']?.value || 28.9} µg/m³
-                    </strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>PM10:</span>
-                    <strong className="text-[#F2F5F1]">
-                      {currentData?.pollutants?.['PM10']?.value || 29.8} µg/m³
-                    </strong>
-                  </div>
-                </div>
-              </div>
-
-              {/* Location B (Queried) */}
-              <div className="p-4 rounded-2xl bg-[#101510] border border-[#273128] space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-[#1B231C] text-[#65C46D] border border-[#344A35]">
-                    Comparison Target
-                  </span>
-                  {targetCompareData && (
-                    <span
-                      className="text-xs font-bold px-2 py-0.5 rounded text-[#080B09]"
-                      style={{ backgroundColor: getAqiColor(targetCompareData.aqi) }}
-                    >
-                      AQI {targetCompareData.aqi}
-                    </span>
-                  )}
-                </div>
-
-                {loadingCompareData ? (
-                  <div className="py-8 flex flex-col items-center justify-center gap-2 text-xs text-[#9BA69B]">
-                    <Loader2 className="w-5 h-5 text-[#B7F56A] animate-spin" />
-                    <span>Fetching live atmospheric observation...</span>
-                  </div>
-                ) : targetCompareData ? (
-                  <>
-                    <h4 className="text-sm font-bold text-[#F2F5F1]">{targetCompareData.locationName}</h4>
-                    <div className="space-y-1.5 text-xs text-[#9BA69B]">
-                      <div className="flex justify-between">
-                        <span>Category:</span>
-                        <strong className="text-[#F2F5F1]">{targetCompareData.category}</strong>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Dominant Pollutant:</span>
-                        <strong className="text-[#F2F5F1]">{targetCompareData.dominantPollutant}</strong>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>PM2.5:</span>
-                        <strong className="text-[#F2F5F1]">
-                          {targetCompareData.pollutants?.['PM2.5']?.value || '—'} µg/m³
-                        </strong>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>PM10:</span>
-                        <strong className="text-[#F2F5F1]">
-                          {targetCompareData.pollutants?.['PM10']?.value || '—'} µg/m³
-                        </strong>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        onSelectCoords(targetCompareData.latitude, targetCompareData.longitude, targetCompareData.locationName);
-                        setShowComparisonModal(false);
-                      }}
-                      className="w-full mt-2 py-1.5 px-3 rounded-xl bg-[#B7F56A] text-[#080B09] font-bold text-xs hover:bg-[#65C46D] transition-colors"
-                    >
-                      Switch Dashboard to this Location
-                    </button>
-                  </>
-                ) : (
-                  <div className="py-8 text-center text-xs text-[#9BA69B]">
-                    Search or select a location above to see real-time comparative metrics.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Comparison Verdict Summary */}
-            {targetCompareData && (
-              <div className="p-4 rounded-2xl bg-[#1B231C] border border-[#344A35] text-xs space-y-1.5">
-                <div className="font-bold text-[#B7F56A] flex items-center gap-1.5">
-                  <CheckCircle className="w-4 h-4" /> Environmental Difference Verdict
-                </div>
-                <p className="text-[#F2F5F1] leading-relaxed">
-                  {targetCompareData.aqi < (currentData?.aqi || 114) ? (
-                    <>
-                      <strong>{targetCompareData.locationName}</strong> has noticeably cleaner air (AQI {targetCompareData.aqi}) than {currentLocName} (AQI {currentData?.aqi || 114}). PM2.5 levels are ~
-                      {Math.round((((currentData?.aqi || 114) - targetCompareData.aqi) / (currentData?.aqi || 114)) * 100)}% lower, making it significantly safer for outdoor workouts and outdoor children activities.
-                    </>
-                  ) : (
-                    <>
-                      <strong>{targetCompareData.locationName}</strong> has higher particulate density (AQI {targetCompareData.aqi}) compared to {currentLocName} (AQI {currentData?.aqi || 114}). Exercise caution and consider wearing an N95 mask if traveling there.
-                    </>
-                  )}
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 };

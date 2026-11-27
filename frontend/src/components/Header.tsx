@@ -15,7 +15,8 @@ import {
   X,
   Compass,
   AlertCircle,
-  Loader2
+  Loader2,
+  AlertTriangle
 } from 'lucide-react';
 import { SavedLocation } from '../types';
 
@@ -49,11 +50,16 @@ export const Header: React.FC<HeaderProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [showSavedModal, setShowSavedModal] = useState(false);
   const [newTag, setNewTag] = useState<SavedLocation['tag']>('Home');
 
+  // Deletion Confirmation Modal State
+  const [locationToDelete, setLocationToDelete] = useState<SavedLocation | null>(null);
+
   const handleSearch = async (val: string) => {
     setSearchQuery(val);
+    setSearchError(null);
     if (val.trim().length < 2) {
       setSearchResults([]);
       return;
@@ -62,9 +68,16 @@ export const Header: React.FC<HeaderProps> = ({
     try {
       const res = await fetch(`/api/locations/search?query=${encodeURIComponent(val.trim())}`);
       const data = await res.json();
-      setSearchResults(data);
+      if (Array.isArray(data) && data.length > 0) {
+        setSearchResults(data);
+        setSearchError(null);
+      } else {
+        setSearchResults([]);
+        setSearchError(`No verified location matches "${val.trim()}". Try entering a landmark, lake, or city name.`);
+      }
     } catch (e) {
       console.error(e);
+      setSearchError('Unable to connect to location search service.');
     } finally {
       setIsSearching(false);
     }
@@ -73,17 +86,10 @@ export const Header: React.FC<HeaderProps> = ({
   const handleKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && searchQuery.trim().length > 1) {
       e.preventDefault();
-      setIsSearching(true);
-      try {
-        const res = await fetch(`/api/locations/search?query=${encodeURIComponent(searchQuery.trim())}`);
-        const data = await res.json();
-        if (data && data.length > 0) {
-          handleSelectResult(data[0]);
-        }
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setIsSearching(false);
+      if (searchResults.length > 0) {
+        handleSelectResult(searchResults[0]);
+      } else {
+        handleSearch(searchQuery);
       }
     }
   };
@@ -92,6 +98,14 @@ export const Header: React.FC<HeaderProps> = ({
     onSearchSelect(item.latitude, item.longitude, item.name || item.displayName);
     setSearchQuery('');
     setSearchResults([]);
+    setSearchError(null);
+  };
+
+  const confirmDelete = () => {
+    if (locationToDelete) {
+      onRemoveSavedLocation(locationToDelete.id);
+      setLocationToDelete(null);
+    }
   };
 
   return (
@@ -136,7 +150,7 @@ export const Header: React.FC<HeaderProps> = ({
             )}
             <input
               type="text"
-              placeholder="Search any city, locality, or district (e.g. Satara, Pune, Delhi)..."
+              placeholder="Search exact landmark, lake, locality (e.g. Upvan Lake, Satara)..."
               value={searchQuery}
               onChange={(e) => handleSearch(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -159,7 +173,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
 
-          {/* Search Dropdown */}
+          {/* Search Dropdown / Validation Message */}
           {searchResults.length > 0 && (
             <div className="absolute left-0 right-0 mt-2 bg-[#151B16] border border-[#273128] rounded-xl shadow-2xl overflow-hidden z-50 max-h-72 overflow-y-auto">
               {searchResults.map((item, idx) => (
@@ -171,19 +185,30 @@ export const Header: React.FC<HeaderProps> = ({
                   <div className="flex items-center gap-2.5">
                     <MapPin className="w-4 h-4 text-[#B7F56A] shrink-0" />
                     <div>
-                      <div className="text-sm font-medium text-[#F2F5F1]">{item.name}</div>
+                      <div className="text-sm font-semibold text-[#F2F5F1]">{item.name}</div>
                       <div className="text-xs text-[#9BA69B] line-clamp-1">
-                        {item.displayName || `Lat: ${item.latitude.toFixed(2)}, Lng: ${item.longitude.toFixed(2)}`}
+                        {item.displayName || `Lat: ${item.latitude.toFixed(4)}, Lng: ${item.longitude.toFixed(4)}`}
                       </div>
                     </div>
                   </div>
-                  {item.baseAqi && (
+                  {item.precision === 'exact_landmark' ? (
+                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-[#B7F56A]/10 text-[#B7F56A] border border-[#B7F56A]/30">
+                      Landmark
+                    </span>
+                  ) : item.baseAqi ? (
                     <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded bg-[#101510] text-[#B7F56A] border border-[#273128]">
                       AQI {item.baseAqi}
                     </span>
-                  )}
+                  ) : null}
                 </button>
               ))}
+            </div>
+          )}
+
+          {searchError && (
+            <div className="absolute left-0 right-0 mt-2 p-3 bg-[#1B231C] border border-red-500/30 rounded-xl shadow-2xl z-50 text-xs text-red-300 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+              <span>{searchError}</span>
             </div>
           )}
         </div>
@@ -193,7 +218,7 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#101510] border border-[#273128]">
             <MapPin className="w-4 h-4 text-[#B7F56A] animate-pulse" />
             <div className="text-left">
-              <div className="text-xs font-semibold text-[#F2F5F1] truncate max-w-[170px]">
+              <div className="text-xs font-semibold text-[#F2F5F1] truncate max-w-[170px]" title={currentLocationName}>
                 {currentLocationName}
               </div>
               <div className="text-[10px] text-[#9BA69B] flex items-center gap-1.5">
@@ -264,15 +289,15 @@ export const Header: React.FC<HeaderProps> = ({
                       <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#101510] text-[#B7F56A] border border-[#344A35]">
                         {loc.tag}
                       </span>
-                      <span className="text-xs font-medium text-[#F2F5F1] truncate max-w-[150px]">
+                      <span className="text-xs font-medium text-[#F2F5F1] truncate max-w-[150px]" title={loc.name}>
                         {loc.name}
                       </span>
                     </div>
                   </button>
                   <button
-                    onClick={() => onRemoveSavedLocation(loc.id)}
+                    onClick={() => setLocationToDelete(loc)}
                     className="opacity-0 group-hover:opacity-100 text-[#9BA69B] hover:text-red-400 p-1 transition-opacity"
-                    title="Remove"
+                    title="Remove location"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -290,6 +315,40 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <Plus className="w-3.5 h-3.5" /> Save Current Place
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Dialog for Saved Location Deletion (Issue 1 Fix) */}
+      {locationToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-[#151B16] border border-[#273128] rounded-2xl max-w-sm w-full p-5 shadow-2xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-[#F2F5F1]">Delete Saved Location?</h4>
+                <p className="text-xs text-[#9BA69B] mt-1">
+                  Are you sure you want to remove <strong className="text-[#F2F5F1]">"{locationToDelete.name}"</strong> ({locationToDelete.tag}) from your saved places?
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#273128]">
+              <button
+                onClick={() => setLocationToDelete(null)}
+                className="px-3.5 py-1.5 rounded-xl bg-[#101510] hover:bg-[#1B231C] text-[#9BA69B] text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                className="px-4 py-1.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-xs font-bold transition-colors shadow-md"
+              >
+                Confirm Delete
+              </button>
+            </div>
           </div>
         </div>
       )}

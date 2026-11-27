@@ -16,6 +16,8 @@ interface AssistantViewProps {
   currentLocationName: string;
   currentAqi: number;
   dominantPollutant: string;
+  latitude: number;
+  longitude: number;
   preferences: HouseholdPreferences;
   onNavigateTab: (tab: string) => void;
   onSelectLocation?: (locationName: string) => void;
@@ -25,6 +27,8 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
   currentLocationName,
   currentAqi,
   dominantPollutant,
+  latitude,
+  longitude,
   preferences,
   onNavigateTab,
   onSelectLocation,
@@ -36,10 +40,10 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
       text: `Hello! I am your AirAware environmental health companion. Right now around ${currentLocationName}, the measured AQI is ${currentAqi} with ${dominantPollutant} dominating.\n\nYou can ask me about ANY location (e.g. "What is the air quality in Satara?", "Compare Pune and Delhi", "Is it safe to jog outside?"). How can I assist you?`,
       timestamp: 'Just now',
       pills: [
-        { label: 'Air quality in Satara right now', type: 'prompt' },
-        { label: 'Compare air in Pune and Mumbai', type: 'prompt' },
+        { label: `Air quality in ${currentLocationName} right now`, type: 'prompt' },
         { label: 'Can I go for a walk today?', type: 'prompt' },
         { label: 'Should I open my windows?', type: 'prompt' },
+        { label: 'Compare air in Pune and Mumbai', type: 'prompt' },
       ],
     },
   ]);
@@ -77,8 +81,8 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: text.trim(),
-          latitude: 19.0760,
-          longitude: 72.8777,
+          latitude: latitude || 19.0760,
+          longitude: longitude || 72.8777,
           locationName: currentLocationName,
           currentAqi,
           dominantPollutant,
@@ -123,11 +127,11 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-bold text-[#F2F5F1]">AirAware AI Companion</h3>
               <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#1B231C] text-[#B7F56A] border border-[#344A35]">
-                Multi-City Global Search
+                Exact Grounding & Telemetry
               </span>
             </div>
             <p className="text-[11px] text-[#9BA69B]">
-              Active context: {currentLocationName} • AQI {currentAqi} • {dominantPollutant}
+              Active context: <strong className="text-[#F2F5F1]">{currentLocationName}</strong> • AQI {currentAqi} • {dominantPollutant}
             </p>
           </div>
         </div>

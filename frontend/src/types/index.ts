@@ -1,3 +1,18 @@
+export type LocationContext = {
+  name: string; // Exact landmark or address (e.g. "Upvan Lake, Thane")
+  displayName?: string; // Full administrative string
+  latitude: number;
+  longitude: number;
+  city?: string;
+  state?: string;
+  country?: string;
+  source: 'gps' | 'ip' | 'search' | 'saved' | 'default';
+  precision: 'exact_landmark' | 'locality' | 'city_level' | 'estimated';
+  nearestStationName?: string;
+  stationDistanceKm?: number;
+  selectedAt: number;
+};
+
 export type PollutantDetail = {
   name: string;
   value: number;
@@ -19,6 +34,9 @@ export type AirQualityData = {
   latitude: number;
   longitude: number;
   locationName: string;
+  city?: string;
+  state?: string;
+  country?: string;
   aqi: number;
   category: 'Good' | 'Moderate' | 'Poor' | 'Very Poor' | 'Severe';
   healthRisk: string;
@@ -26,6 +44,9 @@ export type AirQualityData = {
   summary: string;
   lastUpdated: string;
   isSimulated: boolean;
+  precision?: string;
+  nearestStation?: string;
+  stationDistanceKm?: number;
   pollutants: Record<string, PollutantDetail>;
   hourlyForecast: HourlyForecast[];
   bestOutdoorWindow: string;
@@ -73,6 +94,7 @@ export type SavedLocation = {
   tag: 'Home' | 'Office' | 'School' | 'Family' | 'Other';
   latitude: number;
   longitude: number;
+  city?: string;
   aqi?: number;
   category?: string;
 };
@@ -84,6 +106,7 @@ export type ChatMessage = {
   timestamp: string;
   pills?: { label: string; type: string }[];
   healthNotice?: string;
+  coverageNotice?: string;
 };
 
 export type ChecklistItem = {

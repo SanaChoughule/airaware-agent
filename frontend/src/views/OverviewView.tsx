@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ShieldAlert,
   Wind,
@@ -7,7 +7,10 @@ import {
   TrendingDown,
   Info,
   ChevronRight,
-  Sun
+  Sun,
+  RefreshCw,
+  MapPin,
+  Radio
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -16,9 +19,6 @@ import {
   XAxis,
   YAxis,
   Tooltip,
-  BarChart,
-  Bar,
-  Cell
 } from 'recharts';
 import { AirQualityData } from '../types';
 
@@ -27,6 +27,7 @@ interface OverviewViewProps {
   loading: boolean;
   onNavigateToPlanner: () => void;
   onNavigateToAssistant: () => void;
+  onRefresh?: () => Promise<void> | void;
 }
 
 export const OverviewView: React.FC<OverviewViewProps> = ({
@@ -34,7 +35,24 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   loading,
   onNavigateToPlanner,
   onNavigateToAssistant,
+  onRefresh,
 }) => {
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshedTime, setLastRefreshedTime] = useState<string>('Just now');
+
+  const handleRefreshClick = async () => {
+    if (isRefreshing || !onRefresh) return;
+    setIsRefreshing(true);
+    try {
+      await onRefresh();
+      setLastRefreshedTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    } catch (err) {
+      console.error('Failed to refresh air quality:', err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   if (loading || !data) {
     return (
       <div className="space-y-6 animate-pulse">
@@ -64,6 +82,41 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
       {/* Top Banner: Main AQI & Intelligence Card */}
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#151B16] via-[#101510] to-[#080B09] border border-[#273128] p-6 md:p-8 shadow-2xl">
         <div className="absolute top-0 right-0 w-96 h-96 bg-[#B7F56A]/5 rounded-full blur-3xl pointer-events-none" />
+
+        {/* Header Action Row: Location metadata & Refresh Button */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-6 mb-6 border-b border-[#273128]/60">
+          <div className="flex items-center gap-2 text-xs text-[#9BA69B]">
+            <MapPin className="w-4 h-4 text-[#B7F56A] shrink-0" />
+            <span className="font-bold text-[#F2F5F1] text-sm">{data.locationName}</span>
+            {data.precision && (
+              <span className="px-2 py-0.5 rounded-full bg-[#1B231C] border border-[#344A35] text-[10px] text-[#B7F56A] font-medium uppercase tracking-wider">
+                {data.precision}
+              </span>
+            )}
+            {data.nearestStation && (
+              <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-[#9BA69B]">
+                • <Radio className="w-3 h-3 text-[#65C46D]" /> Station: {data.nearestStation} ({data.stationDistanceKm ?? '1.2'} km)
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] text-[#9BA69B]">
+              Updated: <strong className="text-[#F2F5F1]">{lastRefreshedTime}</strong>
+            </span>
+            {onRefresh && (
+              <button
+                onClick={handleRefreshClick}
+                disabled={isRefreshing}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#1B231C] hover:bg-[#273128] text-[#F2F5F1] hover:text-[#B7F56A] border border-[#273128] text-xs font-semibold transition-all shadow-sm disabled:opacity-50"
+                title="Refresh Air Quality Observation"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-[#B7F56A]' : ''}`} />
+                <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+              </button>
+            )}
+          </div>
+        </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
           {/* AQI Circular Gauge & Dominant Marker */}
@@ -102,7 +155,8 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             </div>
 
             <div className="space-y-2 text-center sm:text-left">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold border"
+              <div
+                className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold border"
                 style={{
                   backgroundColor: `${aqiColor}15`,
                   borderColor: `${aqiColor}40`,
